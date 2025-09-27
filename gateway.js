@@ -1,64 +1,58 @@
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
-import { v4 as uuidv4 } from "uuid";
 import morgan from "morgan";
+import { v4 as uuidv4 } from "uuid";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Add request ID middleware
-app.use((req, res, next) => {
-  req.id = uuidv4();
-  next();
-});
-
-// Logging middleware
-app.use(
-  morgan(":date[iso] :id :method :url -> :status :res[content-length] bytes", {
-    stream: process.stdout,
-  })
-);
-
-// Add token to morgan logs
-morgan.token("id", (req) => req.id);
-
-// Target servers
+// Targets for proxy
 const targets = {
   bcw: "https://bcwserver.com",
   pixelgun: "https://secure.pixelgunserver.com",
-  fyber: "https://engine.fyber.com",
+  fyber: "https://engine.fyber.com"
 };
 
-// Debug log
-console.log("🚀 Gateway starting...");
-console.log("Targets:", targets);
+// Middleware
+app.use(morgan("dev"));
 
-// Proxy helper
-const makeProxy = (target) =>
-  createProxyMiddleware({
-    target,
-    changeOrigin: true,
-    onProxyReq: (proxyReq, req) => {
-      console.log(`[GATEWAY][${req.id}] Forwarding -> ${target}${req.url}`);
-    },
-    onProxyRes: (proxyRes, req) => {
-      console.log(
-        `[GATEWAY][${req.id}] Response <- ${proxyRes.statusCode} from ${target}${req.url}`
-      );
-    },
-  });
-
-// Routes
-app.use("/blockcity", makeProxy(targets.bcw));
-app.use("/get_files_info.php", makeProxy(targets.pixelgun));
-app.use("/ads", makeProxy(targets.fyber));
-
-// Health check
+// Root check
 app.get("/", (req, res) => {
-  res.send("✅ Gateway is running");
+  res.send(`🚀 Gateway running on port ${PORT}`);
 });
+
+// Proxy routes
+app.use(
+  "/blockcity",
+  createProxyMiddleware({
+    target: targets.bcw,
+    changeOrigin: true,
+    pathRewrite: { "^/blockcity": "" },
+    onProxyReq: (proxyReq, req) => {
+      proxyReq.setHeader("X-Request-ID", uuidv4());
+    }
+  })
+);
+
+app.use(
+  "/get_files_info.php",
+  createProxyMiddleware({
+    target: targets.pixelgun,
+    changeOrigin: true
+  })
+);
+
+app.use(
+  "/fyber",
+  createProxyMiddleware({
+    target: targets.fyber,
+    changeOrigin: true,
+    pathRewrite: { "^/fyber": "" }
+  })
+);
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`✅ Listening on http://localhost:${PORT}`);
+  console.log(`🚀 Gateway running on port ${PORT}`);
+  console.log("Targets:", targets);
 });
