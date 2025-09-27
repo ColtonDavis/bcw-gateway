@@ -1,6 +1,6 @@
-// gateway.js -- reverse-proxy with rewrites for cross-platform
+// gateway.js -- reverse-proxy with rewrites + response logging
 import express from "express";
-import { createProxyMiddleware } from "http-proxy-middleware";
+import { createProxyMiddleware, responseInterceptor } from "http-proxy-middleware";
 import morgan from "morgan";
 
 const app = express();
@@ -14,7 +14,7 @@ const TARGETS = {
 
 app.use(morgan("combined"));
 
-// helper: choose target
+// helper: pick target
 function pickTarget(req) {
   const path = req.url || "";
   if (path.includes("pixelgun") || path.includes("/get_files_info.php") || path.includes("/advert_bcw"))
@@ -24,10 +24,8 @@ function pickTarget(req) {
   return TARGETS.bcw;
 }
 
-// --- HEALTH ENDPOINTS ---
-app.get("/", (req, res) => {
-  res.send("✅ Gateway is running. Try /_status for JSON healthcheck.");
-});
+// --- HEALTH ---
+app.get("/", (req, res) => res.send("✅ Gateway running. Use /_status for JSON healthcheck."));
 app.get("/_status", (req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // --- PROXY ---
@@ -39,25 +37,35 @@ app.use("/", (req, res, next) => {
     target,
     changeOrigin: true,
     preserveHeaderKeyCase: true,
+    selfHandleResponse: true, // needed for logging body
     onProxyReq(proxyReq, req, res) {
-      // 🔹 force Android to look like iOS
+      // Spoof platform as iOS
       proxyReq.setHeader("X-Platform-Override", "iOS");
 
-      // If body contains platform=android, rewrite it
-      if (req.body) {
-        let body = req.body.toString();
-        if (body.includes("android")) {
-          body = body.replace(/android/gi, "ios");
-          proxyReq.setHeader("content-length", Buffer.byteLength(body));
-          proxyReq.write(body);
-          proxyReq.end();
+      // Rewrite android → ios inside request body
+      let bodyData = [];
+      req.on("data", chunk => bodyData.push(chunk));
+      req.on("end", () => {
+        if (bodyData.length) {
+          let body = Buffer.concat(bodyData).toString();
+          if (body.includes("android")) {
+            body = body.replace(/android/gi, "ios");
+            proxyReq.setHeader("content-length", Buffer.byteLength(body));
+            proxyReq.write(body);
+          }
         }
-      }
+      });
     },
-    onProxyRes(proxyRes, req, res) {
-      // optional: modify server response if needed
-      // console.log("[PROXY RES]", proxyRes.statusCode);
-    },
+    onProxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
+      const responseBody = responseBuffer.toString("utf8");
+
+      console.log(`\n[PROXY RES] ${req.method} ${req.originalUrl}`);
+      console.log("Status:", proxyRes.statusCode);
+      console.log("Headers:", proxyRes.headers);
+      console.log("Body:", responseBody.substring(0, 500)); // only log first 500 chars
+
+      return responseBuffer; // return original response
+    }),
     ws: true,
     logLevel: "warn"
   });
