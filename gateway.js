@@ -1,11 +1,5 @@
-// gateway.js -- small, robust reverse-proxy for Render
-// Deploy on Render: Render sets PORT via env var. This uses express + http-proxy-middleware.
-//
-// Behavior:
-// - Listens on process.env.PORT (default 8080 locally)
-// - Proxies requests to the official upstreams (bcwserver, secure.pixelgunserver, engine.fyber)
-// - Logs requests and responses for easy debugging
-// - Can be extended to rewrite request/response bodies (commented spots included)
+// gateway.js -- reverse-proxy with health endpoints
+// Works on Render (Render sets PORT in env var).
 
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
@@ -14,17 +8,26 @@ import morgan from "morgan";
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Upstream targets (change if you want a different default)
+// Upstream targets (change if you want different defaults)
 const TARGETS = {
   bcw: process.env.TARGET_BCW || "https://bcwserver.com",
   pixelgun: process.env.TARGET_PIXELGUN || "https://secure.pixelgunserver.com",
   fyber: process.env.TARGET_FYBER || "https://engine.fyber.com"
 };
 
-// Logging http requests
+// Logging
 app.use(morgan("combined"));
 
-// Helper: choose target based on incoming Host header or path heuristics
+// --- Health and root endpoints (must come BEFORE proxy) ---
+app.get("/", (req, res) => {
+  res.send("✅ Gateway is running. Try /_status for JSON healthcheck.");
+});
+
+app.get("/_status", (req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
+// --- Helper: choose target based on incoming request ---
 function pickTarget(req) {
   const host = (req.headers.host || "").toLowerCase();
   const path = req.url || "";
@@ -35,43 +38,38 @@ function pickTarget(req) {
   if (host.includes("fyber") || path.includes("sdk-config") || path.includes("video-cache")) {
     return TARGETS.fyber;
   }
-  // default to bcwserver for blockcity endpoints
+  // default: block city upstream
   return TARGETS.bcw;
 }
 
-// Proxy middleware (catch-all)
+// --- Catch-all proxy ---
 app.use("/", (req, res, next) => {
   const target = pickTarget(req);
-  // debug log
   console.log(`[GATEWAY] ${req.method} ${req.originalUrl} -> ${target}`);
 
-  // Build proxy with optional hooks (e.g. to rewrite request body or headers)
   const proxy = createProxyMiddleware({
     target,
     changeOrigin: true,
     preserveHeaderKeyCase: true,
+    ws: true,
+    logLevel: "warn",
     onProxyReq(proxyReq, req, res) {
-      // Example header overrides you can enable if needed:
-      // proxyReq.setHeader("X-Platform-Override", "Android");
-      // proxyReq.setHeader("Authorization", process.env.ANDROID_AUTH || proxyReq.getHeader("Authorization"));
-
-      // if you want to rewrite the POST body you must buffer it here (advanced)
-      // See: https://github.com/chimurai/http-proxy-middleware#proxy-context-middleware
+      // 🔹 Here is where we can normalize Android → iOS params later
+      // Example:
+      // if (proxyReq.path.includes("platform=android")) {
+      //   proxyReq.path = proxyReq.path.replace("platform=android", "platform=ios");
+      // }
     },
     onProxyRes(proxyRes, req, res) {
-      // Optionally inspect or modify response here. Keep small to avoid big overhead.
-      // console.log("[PROXY RES STATUS]", proxyRes.statusCode);
-    },
-    ws: true,
-    logLevel: "warn"
+      // 🔹 Place to rewrite response body if needed
+      // e.g. change "_ios.json" -> "_android.json" for Android clients
+    }
   });
 
   return proxy(req, res, next);
 });
 
-// health
-app.get("/_status", (req, res) => res.json({ ok: true, ts: Date.now() }));
-
+// --- Start server ---
 app.listen(PORT, () => {
   console.log(`Gateway running on port ${PORT}`);
   console.log(`Targets: bcw=${TARGETS.bcw} pixelgun=${TARGETS.pixelgun} fyber=${TARGETS.fyber}`);
