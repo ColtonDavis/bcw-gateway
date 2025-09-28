@@ -12,6 +12,9 @@ const targets = {
   pixelgun: "https://secure.pixelgunserver.com",
   fyber: "https://engine.fyber.com"
 };
+app.get("/_status", (req, res) => {
+  res.send("OK");
+});
 
 // Middleware
 app.use(morgan("dev"));
